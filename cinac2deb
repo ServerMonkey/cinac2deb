@@ -1,0 +1,132 @@
+#!/bin/sh
+
+# help
+if [ -z "$1" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+	echo "Create a .deb package from a CinaC blueprint."
+	echo "Maintainer parameter format:"
+	echo "  'Name Lastname <mail@example.com>'"
+	echo "cinac2deb <BLUEPRINT_FOLDER_PATH> <MAINTAINER>"
+	echo "Example:"
+	echo "cinac2deb ./my-blueprint 'Peter Miller <peter@example.com>'"
+	exit 0
+fi
+
+# must run as normal user
+if [ "$(id -u)" = 0 ]; then
+	echo 'This script must be run as a normal user, not root!' >&2
+	exit 1
+fi
+
+# args
+if [ -z "$1" ]; then
+	echo "Please enter a type: either 'role' or 'coll'" >&2
+	exit 1
+fi
+if [ -z "$2" ]; then
+	echo "Please enter the name and mail of the maintainer" >&2
+	exit 1
+fi
+
+PATH_SRC="$1"
+MAINTAINER="$2"
+
+# verify in and out path
+PATH_OUT=$(pwd)
+echo "PATH_SRC: $PATH_SRC"
+echo "PATH_OUT: $PATH_OUT"
+if [ ! -d "$PATH_OUT" ]; then
+	echo "There is no folder like that" >&2
+	exit 1
+fi
+if [ ! -d "$PATH_SRC" ]; then
+	echo "There is no folder like that" >&2
+	exit 1
+fi
+if [ ! -f "$PATH_SRC/bp.ini" ]; then
+	echo "This folder does not seem to be a CinaC blueprint" >&2
+	exit 1
+fi
+
+# automatic increase minor version number whith each build
+VERSION_FILE="$PATH_SRC/version"
+# check if verison file exist
+if [ ! -f "$VERSION_FILE" ]; then
+	echo "0" >"$VERSION_FILE"
+	echo "0" >>"$VERSION_FILE"
+fi
+VERSION_MAJOR=$(sed -n '1p' "$VERSION_FILE")
+VERSION_MINOR=$(sed -n '2p' "$VERSION_FILE")
+# check if variable is empty string
+if [ "$VERSION_MAJOR" = "" ]; then
+	echo "Major version number in file 'version' is empty"
+	exit 1
+fi
+# check if variable is empty string
+if [ "$VERSION_MINOR" = "" ]; then
+	echo "Minor version number in file 'version' is empty"
+	exit 1
+fi
+
+VERSION_MINOR_NEW=$((1 + VERSION_MINOR))
+sed -i "2 s/$VERSION_MINOR\$/$VERSION_MINOR_NEW/g" "$VERSION_FILE"
+VERSION="$VERSION_MAJOR.$VERSION_MINOR_NEW"
+
+# variables
+PATH_BLUEPRINTS="/usr/share/cinac/blueprints"
+PACKAGE_NAME=$(basename "$PATH_SRC")
+NAME="cinac-blueprint-$PACKAGE_NAME"
+PATH_BASE="$PATH_OUT/$NAME-$VERSION"
+TARGET="DEBIAN"
+PATH_TARGET="$PATH_BASE/$TARGET"
+
+PATH_LIB="$PATH_BASE$PATH_BLUEPRINTS"
+
+echo "NAME: $NAME"
+echo "PATH_BASE: $PATH_BASE"
+echo "PATH_TARGET: $PATH_TARGET"
+echo "PATH_LIB: $PATH_LIB"
+
+# delete the old build
+echo "Cleaning up old build"
+rm -rf "$PATH_BASE"
+
+# copy relevant files from source to release
+echo "Copying relevant source files"
+mkdir -p "$PATH_LIB" || exit 1
+rsync -rLv --exclude=".*" "$PATH_SRC" "$PATH_LIB" || exit 1
+
+# create Debian control file
+echo "Creating CONTROL file"
+mkdir -p "$PATH_TARGET" || exit 1
+echo "Package: $NAME
+Version: $VERSION
+Section: net
+Priority: optional
+Architecture: all
+Depends: cinac
+Maintainer: $MAINTAINER
+Description: CinaC blueprint
+" >"$PATH_TARGET/control"
+
+# build
+echo "Building"
+fakeroot dpkg-deb --build "$PATH_BASE" || exit 1
+
+# pack source files
+echo "Packing source"
+cd "$PATH_BASE" || exit 1
+zip -q -r "$PATH_BASE.source.zip" .
+cd "$PATH_OUT" || exit 1
+wait
+
+# replace latest version
+ln -sf "$NAME-$VERSION.deb" "$NAME-LATEST.deb"
+ln -sf "$NAME-$VERSION.source.zip" "$NAME-LATEST-source.zip"
+
+# clean up
+echo "Clean up"
+rm -rf "$PATH_BASE"
+
+# check
+echo "Checking:"
+lintian -c "$PATH_BASE.deb"
